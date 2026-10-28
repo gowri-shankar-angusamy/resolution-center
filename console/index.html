@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Resolution Center console</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --panel:#fff; --ink:#1c2330; --muted:#5d6b82; --line:#dde2ea; --accent:#2457d6;
+    --approve:#17794a; --approve-bg:#e3f4eb; --deny:#b3321f; --deny-bg:#fbe7e3;
+    --request:#8a5a00; --request-bg:#fdf1d8; --escalate:#6b3fb5; --escalate-bg:#eee6fa;
+    --ok:#17794a; --warn:#8a5a00; --bad:#b3321f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12161d; --panel:#1b212b; --ink:#e6eaf2; --muted:#93a1b8; --line:#2d3646; --accent:#7aa2ff;
+      --approve:#5fd39a; --approve-bg:#133326; --deny:#ff8f7d; --deny-bg:#3a1b16;
+      --request:#f2c15f; --request-bg:#382c10; --escalate:#bb9cf2; --escalate-bg:#2a1f42;
+      --ok:#5fd39a; --warn:#f2c15f; --bad:#ff8f7d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, Segoe UI, sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0 8px 0 0; }
+  nav button, .btn { font:inherit; border:1px solid var(--line); background:var(--panel); color:var(--ink); padding:5px 12px; border-radius:6px; cursor:pointer; }
+  nav button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .btn:disabled { opacity:.5; cursor:default; }
+  select, input, textarea { font:inherit; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:4px 8px; }
+  textarea { width:100%; font-family:ui-monospace, Consolas, monospace; font-size:12px; }
+  .spacer { flex:1; }
+  .who { display:flex; gap:6px; align-items:center; color:var(--muted); }
+  main { padding:14px 16px; }
+  .cols { display:grid; grid-template-columns:300px 1fr; gap:14px; align-items:start; }
+  @media (max-width: 900px) { .cols { grid-template-columns:1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:12px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
+  #list { max-height:78vh; overflow:auto; }
+  .row { display:flex; gap:8px; align-items:center; padding:6px 8px; border-radius:6px; cursor:pointer; }
+  .row:hover { background:var(--bg); } .row.sel { outline:2px solid var(--accent); }
+  .row .id { font-weight:600; } .row .meta { color:var(--muted); font-size:12px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; border:1px solid transparent; }
+  .b-APPROVE_BUYER { color:var(--approve); background:var(--approve-bg); }
+  .b-DENY { color:var(--deny); background:var(--deny-bg); }
+  .b-REQUEST_EVIDENCE { color:var(--request); background:var(--request-bg); }
+  .b-ESCALATE { color:var(--escalate); background:var(--escalate-bg); }
+  .b-status { color:var(--muted); border-color:var(--line); }
+  .kv { display:grid; grid-template-columns:max-content 1fr; gap:2px 14px; }
+  .kv .k { color:var(--muted); }
+  .quote { border-left:3px solid var(--line); padding:2px 10px; margin:6px 0; }
+  .muted { color:var(--muted); } .small { font-size:12px; }
+  .reasons li { margin:2px 0; }
+  .big { font-size:18px; font-weight:700; }
+  .flex { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width: 1100px) { .grid2 { grid-template-columns:1fr; } }
+  table { border-collapse:collapse; width:100%; } th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  .toast { position:fixed; right:16px; bottom:16px; max-width:420px; padding:10px 14px; border-radius:8px; color:#fff; background:var(--bad); display:none; }
+  .toast.ok { background:var(--ok); }
+  .hidden { display:none; }
+  code { font-family:ui-monospace, Consolas, monospace; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Resolution Center</h1>
+  <nav>
+    <button id="tab-cases" class="on">Cases</button>
+    <button id="tab-queue">Approval queue</button>
+    <button id="tab-audit">Audit log</button>
+  </nav>
+  <label class="muted">Case set <select id="set"></select></label>
+  <span class="spacer"></span>
+  <div class="who">Reviewer <input id="who-name" size="12" placeholder="your name">
+    <select id="who-role"><option value="reviewer">reviewer</option><option value="senior">senior</option></select></div>
+</header>
+<main>
+  <section id="view-cases">
+    <div class="cols">
+      <div class="panel"><h2>Cases</h2>
+        <div class="flex" style="margin-bottom:8px">
+          <input id="filter" placeholder="filter by id" size="14">
+          <select id="type-filter"><option value="">all</option><option>INR</option><option>SNAD</option></select>
+        </div>
+        <div id="list"></div></div>
+      <div id="detail"><div class="panel muted">Pick a case on the left.</div></div>
+    </div>
+  </section>
+  <section id="view-queue" class="hidden"><div class="panel"><h2>Approval queue</h2>
+    <div class="flex" style="margin-bottom:8px"><label>Status <select id="queue-status">
+      <option value="">open (pending / escalated)</option><option>APPROVED</option><option>OVERRIDDEN</option>
+      <option>REJECTED</option><option>EXECUTED</option><option>AUTO_EXECUTED</option></select></label>
+      <button class="btn" id="queue-refresh">Refresh</button></div>
+    <div id="queue-body"></div></div></section>
+  <section id="view-audit" class="hidden"><div class="panel"><h2>Audit log</h2>
+    <div class="flex" style="margin-bottom:8px"><span id="audit-status"></span><button class="btn" id="audit-refresh">Refresh</button></div>
+    <div id="audit-body"></div></div></section>
+</main>
+<div id="toast" class="toast"></div>
+
+<script>
+const OUTCOMES = ["APPROVE_BUYER", "DENY", "REQUEST_EVIDENCE", "ESCALATE"];
+const $ = (id) => document.getElementById(id);
+const state = { set: "dev", cases: [], sel: null, analysis: null };
+
+// Build DOM only through textContent/createTextNode: case text is untrusted data.
+function el(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v === false || v == null) continue;
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (k === "value") e.value = v;
+    else e.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    e.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  }
+  return e;
+}
+const badge = (o) => el("span", { class: "badge b-" + o }, o);
+const statusBadge = (s) => el("span", { class: "badge b-status" }, s);
+
+let toastTimer;
+function toast(msg, ok) {
+  const t = $("toast");
+  t.textContent = msg; t.className = "toast" + (ok ? " ok" : ""); t.style.display = "block";
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.style.display = "none"), ok ? 2500 : 6000);
+}
+async function api(path, body) {
+  const opt = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-RC-Console": "1" }, body: JSON.stringify(body) };
+  const r = await fetch(path, opt);
+  const data = await r.json().catch(() => ({ error: "bad response" }));
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message); } };
+
+// ---------- who / AI controls ----------
+$("who-name").value = localStorage.getItem("rc-name") || "";
+$("who-role").value = localStorage.getItem("rc-role") || "reviewer";
+$("who-name").addEventListener("input", () => localStorage.setItem("rc-name", $("who-name").value));
+$("who-role").addEventListener("change", () => localStorage.setItem("rc-role", $("who-role").value));
+const reviewer = () => ({ name: $("who-name").value.trim(), role: $("who-role").value });
+function needName() { if (!reviewer().name) { toast("Enter your reviewer name (top right) first."); return false; } return true; }
+
+function aiControl() {
+  const sel = el("select", { id: "ai-outcome" }, el("option", { value: "" }, "none"), OUTCOMES.map((o) => el("option", { value: o }, o)));
+  const conf = el("input", { id: "ai-conf", type: "number", min: 0, max: 1, step: 0.05, value: 0.9, style: "width:70px" });
+  return el("div", { class: "flex small" }, el("span", { class: "muted" }, "Simulated AI recommendation:"), sel, "confidence", conf);
+}
+function aiValue() {
+  const o = $("ai-outcome") && $("ai-outcome").value;
+  return o ? { outcome: o, confidence: $("ai-conf").value } : null;
+}
+
+// ---------- case list ----------
+async function loadCases() {
+  state.cases = await api("/api/cases?set=" + state.set);
+  renderList();
+}
+function renderList() {
+  const f = $("filter").value.trim().toLowerCase(), t = $("type-filter").value;
+  const list = $("list"); list.replaceChildren();
+  for (const c of state.cases) {
+    if ((f && !c.case_id.toLowerCase().includes(f)) || (t && c.case_type !== t)) continue;
+    list.append(el("div", { class: "row" + (state.sel === c.case_id ? " sel" : ""), onclick: guard(() => openCase(c.case_id)) },
+      el("span", { class: "id" }, c.case_id), el("span", { class: "meta" }, c.case_type + " · " + c.order_amount),
+      el("span", { class: "spacer" }), c.status ? statusBadge(c.status) : null));
+  }
+}
+
+// ---------- case detail ----------
+const FREE_TEXT = ["buyer_statement", "merchant_statement", "buyer_evidence", "merchant_evidence"];
+function kvTable(obj, skip) {
+  const g = el("div", { class: "kv" });
+  for (const [k, v] of Object.entries(obj)) {
+    if (skip.includes(k)) continue;
+    g.append(el("span", { class: "k" }, k), el("span", null, typeof v === "object" ? JSON.stringify(v) : String(v)));
+  }
+  return g;
+}
+function casePanel(c) {
+  const list = (a) => (a && a.length ? a.join("; ") : "none");
+  return el("div", { class: "panel" }, el("h2", null, "Case " + c.case_id + " · " + c.case_type),
+    kvTable(c, ["case_id", ...FREE_TEXT]),
+    el("div", { class: "quote" }, el("div", { class: "muted small" }, "Buyer"), c.buyer_statement || "", el("div", { class: "muted small" }, "Evidence: " + list(c.buyer_evidence))),
+    el("div", { class: "quote" }, el("div", { class: "muted small" }, "Merchant"), c.merchant_statement || "", el("div", { class: "muted small" }, "Evidence: " + list(c.merchant_evidence))));
+}
+function decisionPanel(res, title) {
+  const d = res.decision;
+  const ai = d.ai;
+  return el("div", { class: "panel" }, el("h2", null, title || "Decision"),
+    el("div", { class: "flex" }, el("span", { class: "big" }, "Rulebook outcome"), badge(d.final_outcome),
+      el("span", null, "rule ", el("code", null, d.rule_id)), statusBadge(d.status),
+      d.requires_human ? el("span", { class: "muted" }, "human approval required") : el("span", { class: "muted" }, "can be sent automatically")),
+    ai ? el("p", null, "AI recommended ", badge(ai.outcome), " at confidence " + Number(ai.confidence).toFixed(2) + " — ",
+      d.ai_agrees ? el("b", null, "agrees with the rulebook") : el("b", { style: "color:var(--bad)" }, "disagrees with the rulebook")) : el("p", { class: "muted" }, "No AI recommendation supplied."),
+    d.review_reasons.length ? el("div", null, el("div", { class: "muted small" }, "Why a human must look"),
+      el("ul", { class: "reasons" }, d.review_reasons.map((r) => el("li", null, r)))) : null,
+    res.note ? el("div", { class: "muted small" }, res.note) : null);
+}
+function contextPanel(ctx) {
+  if (!ctx) return el("div", { class: "panel muted" }, "No context: the case is incomplete or invalid.");
+  return el("div", { class: "panel" }, el("h2", null, "Reviewer context"),
+    el("div", { class: "muted small" }, "Rule that fired (exact lookup)"),
+    el("div", { class: "quote" }, ctx.fired_rule.text || ("No specific rule: " + ctx.fired_rule.id)),
+    el("div", { class: "muted small" }, "Related rules (keyword retrieval)"),
+    el("ul", null, ctx.related_rules.map((r) => el("li", null, r))),
+    el("div", { class: "muted small" }, "Guidance"),
+    el("ul", null, ctx.guidance.map((r) => el("li", null, r))),
+    el("div", { class: "muted small" }, "Similar past cases (dev precedents)"),
+    el("table", null, el("tr", null, el("th", null, "case"), el("th", null, "outcome"), el("th", null, "rule"), el("th", null, "score")),
+      ctx.similar_cases.map((s) => el("tr", null, el("td", null, el("a", { href: "#", onclick: guard((e) => { e.preventDefault(); return openCase(s.case_id, "dev"); }) }, s.case_id)),
+        el("td", null, badge(s.outcome)), el("td", null, s.rule), el("td", null, s.score)))));
+}
+function tracePanel(a) {
+  return el("details", { class: "panel" }, el("summary", { class: "muted" }, "Evidence-gathering trace" + (Object.keys(a.failed_services).length ? " (failed services!)" : "")),
+    el("table", null, el("tr", null, el("th", null, "service"), el("th", null, "ok"), el("th", null, "attempts"), el("th", null, "error")),
+      a.trace.map((t) => el("tr", null, el("td", null, t.service), el("td", null, t.ok ? "yes" : "NO"), el("td", null, t.attempts), el("td", null, t.error || "")))));
+}
+
+function actionsPanel(a) {
+  const st = a.state, id = a.case.case_id;
+  const box = el("div", { class: "panel" }, el("h2", null, "Approval"));
+  if (!st) {
+    box.append(el("p", { class: "muted" }, "Not in the approval queue yet."),
+      el("button", { class: "btn primary", onclick: guard(async () => { await api("/api/submit", { set: state.set, case_id: id, ai: aiValue() }); toast("Submitted", true); await refreshCase(); await loadCases(); }) }, "Submit for approval"));
+    return box;
+  }
+  box.append(el("div", { class: "flex" }, "Status", statusBadge(st.status), "recommended", badge(st.recommended_outcome),
+    st.final_outcome !== st.recommended_outcome ? ["final", badge(st.final_outcome)] : null),
+    el("table", null, el("tr", null, el("th", null, "#"), el("th", null, "when"), el("th", null, "event"), el("th", null, "by")),
+      st.history.map((h) => el("tr", null, el("td", null, h.seq), el("td", null, h.ts), el("td", null, h.event), el("td", null, h.actor)))));
+  if (["PENDING_HUMAN_APPROVAL", "ESCALATED_TO_SENIOR"].includes(st.status)) {
+    const dec = el("select", { id: "rv-decision" }, ["approve", "override", "reject"].map((x) => el("option", { value: x }, x)));
+    const ov = el("select", { id: "rv-outcome" }, OUTCOMES.map((o) => el("option", { value: o }, o)));
+    const reason = el("textarea", { id: "rv-reason", rows: 2, placeholder: "Reason (required to override or reject)" });
+    box.append(el("div", { class: "flex", style: "margin-top:10px" }, dec, el("span", { class: "muted" }, "override to"), ov),
+      reason, el("div", { style: "margin-top:6px" }, el("button", { class: "btn primary", onclick: guard(async () => {
+        if (!needName()) return;
+        const body = { case_id: id, reviewer: reviewer().name, role: reviewer().role, decision: dec.value, reason: reason.value,
+          override_outcome: dec.value === "override" ? ov.value : null };
+        await api("/api/review", body); toast("Recorded", true); await refreshCase(); await loadCases();
+      }) }, "Record decision")),
+      el("div", { class: "muted small" }, "Escalated cases, high-value cases and overrides to APPROVE_BUYER need role = senior."));
+  } else if (["APPROVED", "OVERRIDDEN"].includes(st.status)) {
+    box.append(el("div", { style: "margin-top:10px" }, el("button", { class: "btn primary", onclick: guard(async () => {
+      if (!needName()) return;
+      await api("/api/execute", { case_id: id, actor: reviewer().name, role: reviewer().role });
+      toast("Executed (mock, no money moved)", true); await refreshCase(); await loadCases();
+    }) }, "Execute (mock)")));
+  }
+  return box;
+}
+
+function whatifPanel(c) {
+  const input = {}; for (const [k, v] of Object.entries(c)) input[k] = v;
+  const ta = el("textarea", { id: "whatif-json", rows: 14 }); ta.value = JSON.stringify(input, null, 2);
+  const out = el("div", { id: "whatif-out" });
+  return el("details", { class: "panel" }, el("summary", { class: "muted" }, "What-if: edit fields and re-run (nothing is saved or queued)"),
+    ta, el("div", { class: "flex", style: "margin-top:6px" }, el("button", { class: "btn", onclick: guard(async () => {
+      let parsed; try { parsed = JSON.parse(ta.value); } catch (e) { toast("Invalid JSON: " + e.message); return; }
+      const res = await api("/api/whatif", { set: state.set, case: parsed, ai: aiValue() });
+      out.replaceChildren(decisionPanel(res, "What-if result"), contextPanel(res.context));
+    }) }, "Run what-if"), el("button", { class: "btn", onclick: () => { ta.value = JSON.stringify(input, null, 2); out.replaceChildren(); } }, "Reset")), out);
+}
+
+async function openCase(id, setName) {
+  if (setName && setName !== state.set) { state.set = setName; $("set").value = setName; await loadCases(); }
+  state.sel = id; renderList();
+  history.replaceState(null, "", "#set=" + state.set + "&case=" + encodeURIComponent(id));
+  const a = await api("/api/analyze", { set: state.set, case_id: id, ai: null });
+  state.analysis = a; renderDetail();
+}
+async function refreshCase() {
+  if (!state.sel) return;
+  state.analysis = await api("/api/analyze", { set: state.set, case_id: state.sel, ai: aiValue() }); renderDetail();
+}
+function renderDetail() {
+  const a = state.analysis, d = $("detail"); d.replaceChildren();
+  const rerun = el("button", { class: "btn", onclick: guard(refreshCase) }, "Re-run with this AI input");
+  d.append(el("div", { class: "panel" }, el("div", { class: "flex" }, aiControl(), rerun)),
+    casePanel(a.case),
+    el("div", { class: "grid2" }, el("div", null, decisionPanel(a), actionsPanel(a)), contextPanel(a.context)),
+    whatifPanel(a.case), tracePanel(a));
+  const cur = state.aiKeep; if (cur) { $("ai-outcome").value = cur.o; $("ai-conf").value = cur.c; }
+  $("ai-outcome").addEventListener("change", () => (state.aiKeep = { o: $("ai-outcome").value, c: $("ai-conf").value }));
+  $("ai-conf").addEventListener("change", () => (state.aiKeep = { o: $("ai-outcome").value, c: $("ai-conf").value }));
+}
+
+// ---------- queue / audit ----------
+async function loadQueue() {
+  const q = await api("/api/queue" + ($("queue-status").value ? "?status=" + $("queue-status").value : ""));
+  const body = $("queue-body"); body.replaceChildren();
+  if (!q.count) { body.append(el("p", { class: "muted" }, "Nothing here.")); return; }
+  body.append(el("table", null, el("tr", null, ["case", "status", "recommended", "rule", "amount", "why review", ""].map((h) => el("th", null, h))),
+    q.items.map((i) => el("tr", null, el("td", null, i.case_id), el("td", null, statusBadge(i.status)), el("td", null, badge(i.recommended_outcome)),
+      el("td", null, i.rule_id), el("td", null, i.amount), el("td", { class: "small" }, i.review_reasons.join("; ")),
+      el("td", null, el("button", { class: "btn", onclick: guard(async () => { show("cases"); await openCase(i.case_id, i.set || "dev"); }) }, "Open"))))));
+}
+async function loadAudit() {
+  const a = await api("/api/audit?limit=100");
+  $("audit-status").replaceChildren(a.verified ? el("b", { style: "color:var(--ok)" }, "Chain verified (" + a.total + " entries)")
+    : el("b", { style: "color:var(--bad)" }, "TAMPERED at entry " + a.first_bad_seq));
+  const body = $("audit-body"); body.replaceChildren();
+  body.append(el("table", null, el("tr", null, ["#", "time", "case", "event", "by", "role", "details"].map((h) => el("th", null, h))),
+    a.events.map((e) => el("tr", null, el("td", null, e.seq), el("td", null, e.ts), el("td", null, e.case_id), el("td", null, e.event),
+      el("td", null, e.actor), el("td", null, e.role), el("td", { class: "small" }, e.event === "REVIEWED" ? (e.data.decision + (e.data.reason ? " — " + e.data.reason : ""))
+        : e.event === "RECOMMENDED" ? (e.data.final_outcome + " (" + e.data.rule_id + ")") : (e.data.action || ""))))));
+}
+
+// ---------- tabs ----------
+function show(name) {
+  for (const n of ["cases", "queue", "audit"]) { $("view-" + n).classList.toggle("hidden", n !== name); $("tab-" + n).classList.toggle("on", n === name); }
+  if (name === "queue") guard(loadQueue)(); if (name === "audit") guard(loadAudit)();
+}
+for (const n of ["cases", "queue", "audit"]) $("tab-" + n).addEventListener("click", () => show(n));
+$("queue-refresh").addEventListener("click", guard(loadQueue)); $("queue-status").addEventListener("change", guard(loadQueue));
+$("audit-refresh").addEventListener("click", guard(loadAudit));
+$("filter").addEventListener("input", renderList); $("type-filter").addEventListener("change", renderList);
+$("set").addEventListener("change", guard(async () => { state.set = $("set").value; state.sel = null; $("detail").replaceChildren(el("div", { class: "panel muted" }, "Pick a case on the left.")); await loadCases(); }));
+
+guard(async () => {
+  const sets = await api("/api/sets");
+  $("set").replaceChildren(...sets.map((s) => el("option", { value: s }, s)));
+  const h = new URLSearchParams(location.hash.slice(1));
+  state.set = sets.includes(h.get("set")) ? h.get("set") : sets.includes("dev") ? "dev" : sets[0]; $("set").value = state.set;
+  await loadCases();
+  if (h.get("case")) await openCase(h.get("case"));
+})();
+</script>
+</body>
+</html>

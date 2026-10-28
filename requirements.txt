@@ -1,0 +1,14 @@
+# Resolution Center
+# Python 3.10 or newer. Everything is standard library except the MCP server.
+
+# Needed only for mcp_server.py and test_mcp_server.py.
+# Use the Python MCP SDK release that provides `mcp.server.mcpserver`.
+# After installing, run `pip show mcp` and pin the exact version here, for example mcp==X.Y.Z.
+mcp
+
+# Optional: the tests are plain scripts (python test_rulebook.py), but also run under pytest.
+# pytest
+
+# Not installed from this file:
+#   Kev (https://github.com/jaredpalmer/kev) is a separate clone with its own environment
+#   (Python >=3.12,<3.14, installed with uv). See CLAUDE.md for setup.

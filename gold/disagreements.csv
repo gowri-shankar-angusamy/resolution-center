@@ -1,0 +1,5 @@
+﻿case_id,human_outcome,human_rule,human_confidence,human_notes,rulebook_outcome,rulebook_rule,resolution,why
+GS-004,DENY,INR-7,2,,REQUEST_EVIDENCE,DEFAULT,rulebook,Evidence not provided yet
+GS-006,APPROVE_BUYER,SNAD-3,3,,REQUEST_EVIDENCE,DEFAULT,human,Evidence is already provided
+GS-007,DENY,INR-2,3,,APPROVE_BUYER,INR-3,rulebook,Missed a rulebook condition
+GS-010,DENY,INR-2,3,,ESCALATE,G5,human,"Even if escalated, it will be denied eventually"
