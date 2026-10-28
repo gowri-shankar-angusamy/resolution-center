@@ -68,7 +68,7 @@ def test_invalid_case_escalates():
 
 def test_dev_cases_never_crash():
     import json
-    with open("data/cases_dev.jsonl") as f:
+    with open("../data/cases_dev.jsonl") as f:
         for line in f:
             c = json.loads(line)
             d = decide(c)

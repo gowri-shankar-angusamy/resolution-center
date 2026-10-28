@@ -8,7 +8,7 @@ from mock_apis import PERMANENT, MockBackend, ToolError
 
 
 def load():
-    with open("data/cases_dev.jsonl") as f:
+    with open("../data/cases_dev.jsonl") as f:
         return [json.loads(l) for l in f]
 
 
