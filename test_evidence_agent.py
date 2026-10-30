@@ -8,7 +8,7 @@ from mock_apis import PERMANENT, MockBackend, ToolError
 
 
 def load():
-    with open("../data/cases_dev.jsonl") as f:
+    with open("data/cases_dev.jsonl") as f:
         return [json.loads(l) for l in f]
 
 
@@ -78,6 +78,17 @@ def test_bad_planner_cannot_loop_or_overspend():
 
     b = EvidenceAgent(MockBackend(CASES), Inventor()).gather(INR["case_id"])
     assert not b.complete
+
+
+def test_trace_includes_planner_and_tool_timing_without_evidence_values():
+    bundle = EvidenceAgent(MockBackend(CASES)).gather(INR["case_id"])
+    planner_events = [event for event in bundle.trace if event.get("event") == "planner"]
+    tool_events = [event for event in bundle.trace if event.get("event", "tool") == "tool"]
+    assert planner_events and tool_events
+    assert all(event["planner"] == "RulePlanner" for event in planner_events)
+    assert all(isinstance(event["latency_ms"], (int, float)) for event in planner_events + tool_events)
+    assert all("result_fields" in event and "fields" not in event for event in tool_events)
+    assert all("available_services" in event for event in planner_events)
 
 
 def test_services_do_not_expose_labels():

@@ -1,0 +1,74 @@
+Resolution Center — Combined Observability + Comparison + AI Advisor bundle
+
+This ZIP is a complete project folder with the Stage 2 Ollama planner integration,
+Stage 3 observability/planner comparison, and Stage 4 AI Decision Advisor combined.
+
+SETUP
+1. Back up your existing resolution_center folder first.
+2. Extract this ZIP. It contains a resolution_center/ folder; use that folder as the
+   integrated project, or copy its contents into your existing project root and allow
+   overwriting when prompted. Do not copy the .venv from your old project over this one.
+3. Confirm Python is available and Ollama is running with qwen3.5:4b installed.
+4. In PowerShell, open the integrated resolution_center project root and run:
+
+   $env:RC_PLANNER = "ollama"
+   $env:RC_AI_ADVISOR = "ollama"
+   $env:OLLAMA_MODEL = "qwen3.5:4b"
+   $env:OLLAMA_ADVISOR_MODEL = "qwen3.5:4b"
+   $env:OLLAMA_HOST = "http://localhost:11434"
+   python console.py
+
+5. Open http://127.0.0.1:8765 and select RC-0231.
+   The UI should show the deterministic rulebook outcome and, if the local model
+   responds successfully, a separate AI recommendation with rationale and latency.
+   The evidence trace shows planner selections, tool attempts, latency, result field
+   names, and errors. AI recommendation never overrides the rulebook.
+
+COMPARE PLANNERS
+   python compare_planners.py RC-0231
+
+This invokes the rule planner and Ollama planner in sequence. It does not invoke the
+AI Decision Advisor and does not submit, approve, or execute a case.
+
+TESTS (no model required for these unit tests)
+   python test_ai_advisor.py
+   python test_rc_planner_config.py
+   python test_ollama_planner.py
+   python test_evidence_agent.py
+   python test_rulebook.py
+   python test_policy.py
+   python test_console.py
+   python test_rag.py
+   python test_approvals.py
+   python test_eval_harness.py
+   python test_gold.py
+
+CONFIGURATION
+- RC_PLANNER: rule (default) or ollama.
+- RC_AI_ADVISOR: ollama or none. Defaults to ollama when RC_PLANNER=ollama;
+  otherwise defaults to none.
+- OLLAMA_ADVISOR_MODEL: optional; defaults to OLLAMA_MODEL, then qwen3.5:4b.
+- OLLAMA_ADVISOR_TIMEOUT: optional; defaults to OLLAMA_TIMEOUT, then 60 seconds.
+- If the advisor errors, the UI reports the error and the deterministic rulebook
+  continues to decide. No external service or money movement is performed.
+
+SAFETY / INTERPRETATION
+- The advisor is advisory only. The deterministic rulebook remains authoritative.
+- Human approval and escalation safeguards remain in place.
+- Model-reported confidence is not calibrated probability.
+- The advisor does not receive the current case's exact fired rule/final outcome or
+  gold/evaluation labels. Similar development precedents are supplied as RAG context.
+- The MCP end-to-end test requires the optional `mcp` SDK; it was not run in the
+  packaging environment because that dependency was unavailable.
+
+
+STAGE 5 — ADVISOR CONTEXT MODES AND INPUT AUDIT
+- The console has an AI context dropdown; default is AI only (no policy).
+- AI + Policy RAG uses retrieved context and adds applicable rule text even when keyword retrieval missed it.
+- AI + explicit policy sends applicable policy rules parsed from the DOCX, without guidance/precedents.
+- On RC-0085, both INR-2 and G4 should be present in the model input for RAG and explicit-policy modes.
+- Expand “AI input audit” under the decision to inspect the exact logical case payload, policy context, and system prompt.
+- The rulebook decision and human-approval requirements are unchanged and remain authoritative.
+- Run: python test_ai_advisor.py; python test_rc_planner_config.py; python test_console.py; python test_rag.py
+
+- To compare all three advisor context modes while gathering evidence only once, run: python compare_advisor_modes.py RC-0085

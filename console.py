@@ -87,13 +87,25 @@ class ConsoleApp:
         ctx = None if d.rule_id == "INVALID_CASE" else rag.build_context(svc.index, case, d)
         return {"decision": d.to_dict(), "context": ctx}
 
-    def analyze(self, set_name: str, case_id: str, ai_raw=None) -> dict:
+    def analyze(self, set_name: str, case_id: str, ai_raw=None, advisor_mode: str = "ai_only") -> dict:
         svc = self._svc(set_name)
         self.case(set_name, case_id)
         b = svc.agent.gather(case_id)
-        out = self._decide(svc, b.to_case(), parse_ai(ai_raw))
-        return {"case": b.to_case(), **out, "trace": b.trace, "failed_services": b.failed_services,
-                "state": self.approvals.state(case_id)}
+        case = b.to_case()
+        base = policy.decide(case)
+        ctx = None if base.rule_id == "INVALID_CASE" else rag.build_context(svc.index, case, base)
+        manual_ai = parse_ai(ai_raw)
+        advisor_result = svc.recommend_ai(case, ctx, advisor_mode) if manual_ai is None else None
+        recommendation = manual_ai or (advisor_result.recommendation if advisor_result else None)
+        d = policy.decide(case, recommendation)
+        # Context is reviewer-facing; it is not the source of the final outcome.
+        ctx = None if d.rule_id == "INVALID_CASE" else rag.build_context(svc.index, case, d)
+        return {"case": case, "decision": d.to_dict(), "context": ctx,
+                "advisor": advisor_result.to_dict() if advisor_result else None,
+                "trace": b.trace, "failed_services": b.failed_services,
+                "state": self.approvals.state(case_id),
+                "planner_mode": svc.planner_mode, "advisor_mode": svc.advisor_mode,
+                "advisor_context_mode": advisor_mode}
 
     def whatif(self, set_name: str, case: dict, ai_raw=None) -> dict:
         if not isinstance(case, dict):
@@ -115,10 +127,10 @@ class ConsoleApp:
                 "events": list(reversed(events[-max(1, min(limit, 500)):]))}
 
     # ---- writes ----
-    def submit(self, set_name: str, case_id: str, ai_raw=None) -> dict:
+    def submit(self, set_name: str, case_id: str, ai_raw=None, advisor_mode: str = "ai_only") -> dict:
         svc = self._svc(set_name)
         self.case(set_name, case_id)
-        res = svc.submit_for_approval(case_id, parse_ai(ai_raw))
+        res = svc.submit_for_approval(case_id, parse_ai(ai_raw), advisor_mode=advisor_mode)
         if "error" in res:
             raise BadRequest(res["error"])
         return res
@@ -208,11 +220,13 @@ def make_handler(app: ConsoleApp):
                     raise BadRequest("body must be a JSON object")
                 path, ai = urlparse(self.path).path, body.get("ai")
                 if path == "/api/analyze":
-                    return self._send(200, app.analyze(body.get("set", "dev"), str(body.get("case_id", "")), ai))
+                    return self._send(200, app.analyze(body.get("set", "dev"), str(body.get("case_id", "")), ai,
+                                                        str(body.get("advisor_mode", "ai_only"))))
                 if path == "/api/whatif":
                     return self._send(200, app.whatif(body.get("set", "dev"), body.get("case"), ai))
                 if path == "/api/submit":
-                    return self._send(200, app.submit(body.get("set", "dev"), str(body.get("case_id", "")), ai))
+                    return self._send(200, app.submit(body.get("set", "dev"), str(body.get("case_id", "")), ai,
+                                                      str(body.get("advisor_mode", "ai_only"))))
                 if path == "/api/review":
                     return self._send(200, app.review(body))
                 if path == "/api/execute":
@@ -238,6 +252,10 @@ def main() -> int:
     app = ConsoleApp(Path(a.audit) if a.audit else None)
     httpd = serve(app, a.port)
     print(f"Resolution Center console: http://127.0.0.1:{httpd.server_address[1]}   (Ctrl+C to stop)")
+    if app.sets:
+        active_service = next(iter(app.sets.values()))
+        print(f"Evidence planner: {active_service.planner_mode}")
+        print(f"AI advisor: {active_service.advisor_mode}")
     print(f"Audit log: {app.approvals.path}")
     try:
         httpd.serve_forever()

@@ -70,6 +70,11 @@
     <button id="tab-audit">Audit log</button>
   </nav>
   <label class="muted">Case set <select id="set"></select></label>
+  <label class="muted">AI context <select id="advisor-mode">
+    <option value="ai_only" selected>AI only (no policy)</option>
+    <option value="ai_policy_rag">AI + Policy RAG</option>
+    <option value="ai_explicit_policy">AI + explicit policy</option>
+  </select></label>
   <span class="spacer"></span>
   <div class="who">Reviewer <input id="who-name" size="12" placeholder="your name">
     <select id="who-role"><option value="reviewer">reviewer</option><option value="senior">senior</option></select></div>
@@ -101,7 +106,7 @@
 <script>
 const OUTCOMES = ["APPROVE_BUYER", "DENY", "REQUEST_EVIDENCE", "ESCALATE"];
 const $ = (id) => document.getElementById(id);
-const state = { set: "dev", cases: [], sel: null, analysis: null };
+const state = { set: "dev", cases: [], sel: null, analysis: null, advisorMode: "ai_only" };
 
 // Build DOM only through textContent/createTextNode: case text is untrusted data.
 function el(tag, props, ...kids) {
@@ -191,12 +196,26 @@ function casePanel(c) {
 function decisionPanel(res, title) {
   const d = res.decision;
   const ai = d.ai;
+  const advisor = res.advisor;
   return el("div", { class: "panel" }, el("h2", null, title || "Decision"),
     el("div", { class: "flex" }, el("span", { class: "big" }, "Rulebook outcome"), badge(d.final_outcome),
       el("span", null, "rule ", el("code", null, d.rule_id)), statusBadge(d.status),
       d.requires_human ? el("span", { class: "muted" }, "human approval required") : el("span", { class: "muted" }, "can be sent automatically")),
-    ai ? el("p", null, "AI recommended ", badge(ai.outcome), " at confidence " + Number(ai.confidence).toFixed(2) + " — ",
-      d.ai_agrees ? el("b", null, "agrees with the rulebook") : el("b", { style: "color:var(--bad)" }, "disagrees with the rulebook")) : el("p", { class: "muted" }, "No AI recommendation supplied."),
+    ai ? el("div", null,
+      el("p", null, "AI recommended ", badge(ai.outcome), " at model-reported confidence " + Number(ai.confidence).toFixed(2) + " — ",
+        d.ai_agrees ? el("b", null, "agrees with the rulebook") : el("b", { style: "color:var(--bad)" }, "disagrees with the rulebook")),
+      ai.rationale ? el("p", null, el("b", null, "AI rationale: "), ai.rationale) : null,
+      ai.rule_id ? el("p", { class: "muted small" }, "AI-suggested rule: " + ai.rule_id + " · source: " + ai.source) : null) :
+      (advisor && advisor.status === "error") ? el("p", { style: "color:var(--bad)" }, "AI advisor unavailable: " + advisor.error) :
+      (advisor && advisor.status === "disabled") ? el("p", { class: "muted" }, "AI advisor disabled. Set RC_AI_ADVISOR=ollama to enable it.") :
+      el("p", { class: "muted" }, "No AI recommendation supplied."),
+    advisor && advisor.status === "success" ? el("div", { class: "muted small" }, "Advisor model: " + advisor.model + " · context: " + (advisor.advisor_mode || res.advisor_context_mode || "ai_only") + " · latency: " + advisor.latency_ms + " ms") : null,
+    advisor && advisor.details ? el("div", null,
+      advisor.details.evidence_for && advisor.details.evidence_for.length ? el("p", null, el("b", null, "Evidence supporting AI: "), advisor.details.evidence_for.join("; ")) : null,
+      advisor.details.evidence_against && advisor.details.evidence_against.length ? el("p", null, el("b", null, "Evidence against AI: "), advisor.details.evidence_against.join("; ")) : null,
+      advisor.details.missing_information && advisor.details.missing_information.length ? el("p", null, el("b", null, "Information gaps: "), advisor.details.missing_information.join("; ")) : null,
+      advisor.details.input_audit ? el("details", { class: "panel" }, el("summary", null, "AI input audit · exact case fields and policy context supplied"),
+        el("pre", { style: "white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-height:360px;overflow:auto" }, JSON.stringify(advisor.details.input_audit, null, 2))) : null) : null,
     d.review_reasons.length ? el("div", null, el("div", { class: "muted small" }, "Why a human must look"),
       el("ul", { class: "reasons" }, d.review_reasons.map((r) => el("li", null, r)))) : null,
     res.note ? el("div", { class: "muted small" }, res.note) : null);
@@ -216,17 +235,25 @@ function contextPanel(ctx) {
         el("td", null, badge(s.outcome)), el("td", null, s.rule), el("td", null, s.score)))));
 }
 function tracePanel(a) {
-  return el("details", { class: "panel" }, el("summary", { class: "muted" }, "Evidence-gathering trace" + (Object.keys(a.failed_services).length ? " (failed services!)" : "")),
-    el("table", null, el("tr", null, el("th", null, "service"), el("th", null, "ok"), el("th", null, "attempts"), el("th", null, "error")),
-      a.trace.map((t) => el("tr", null, el("td", null, t.service), el("td", null, t.ok ? "yes" : "NO"), el("td", null, t.attempts), el("td", null, t.error || "")))));
+  const plannerMs = a.trace.filter((t) => t.event === "planner").reduce((n, t) => n + (t.latency_ms || 0), 0);
+  const toolMs = a.trace.filter((t) => t.event === "tool").reduce((n, t) => n + (t.latency_ms || 0), 0);
+  const summary = `Evidence trace · planner ${plannerMs.toFixed(0)} ms · tools ${toolMs.toFixed(0)} ms`;
+  return el("details", { class: "panel" }, el("summary", { class: "muted" }, summary + (Object.keys(a.failed_services).length ? " (failures!)" : "")),
+    el("table", null, el("tr", null, el("th", null, "event"), el("th", null, "planner / service"), el("th", null, "ok"), el("th", null, "latency ms"), el("th", null, "attempts"), el("th", null, "details")),
+      a.trace.map((t) => el("tr", null,
+        el("td", null, t.event || "tool"),
+        el("td", null, (t.planner ? t.planner + " → " : "") + (t.selected_service || t.service || "")),
+        el("td", null, t.ok ? "yes" : "NO"),
+        el("td", null, t.latency_ms == null ? "—" : Number(t.latency_ms).toFixed(2)),
+        el("td", null, t.attempts == null ? "—" : t.attempts),
+        el("td", null, t.error || (t.result_fields && t.result_fields.length ? "fields: " + t.result_fields.join(", ") : (t.available_services ? "available: " + t.available_services.join(", ") : "")))))));
 }
-
 function actionsPanel(a) {
   const st = a.state, id = a.case.case_id;
   const box = el("div", { class: "panel" }, el("h2", null, "Approval"));
   if (!st) {
     box.append(el("p", { class: "muted" }, "Not in the approval queue yet."),
-      el("button", { class: "btn primary", onclick: guard(async () => { await api("/api/submit", { set: state.set, case_id: id, ai: aiValue() }); toast("Submitted", true); await refreshCase(); await loadCases(); }) }, "Submit for approval"));
+      el("button", { class: "btn primary", onclick: guard(async () => { await api("/api/submit", { set: state.set, case_id: id, ai: null, advisor_mode: state.advisorMode }); toast("Submitted", true); await refreshCase(); await loadCases(); }) }, "Submit for approval"));
     return box;
   }
   box.append(el("div", { class: "flex" }, "Status", statusBadge(st.status), "recommended", badge(st.recommended_outcome),
@@ -260,7 +287,7 @@ function whatifPanel(c) {
   const ta = el("textarea", { id: "whatif-json", rows: 14 }); ta.value = JSON.stringify(input, null, 2);
   const out = el("div", { id: "whatif-out" });
   return el("details", { class: "panel" }, el("summary", { class: "muted" }, "What-if: edit fields and re-run (nothing is saved or queued)"),
-    ta, el("div", { class: "flex", style: "margin-top:6px" }, el("button", { class: "btn", onclick: guard(async () => {
+    el("div", { class: "flex", style: "margin:8px 0" }, aiControl()), ta, el("div", { class: "flex", style: "margin-top:6px" }, el("button", { class: "btn", onclick: guard(async () => {
       let parsed; try { parsed = JSON.parse(ta.value); } catch (e) { toast("Invalid JSON: " + e.message); return; }
       const res = await api("/api/whatif", { set: state.set, case: parsed, ai: aiValue() });
       out.replaceChildren(decisionPanel(res, "What-if result"), contextPanel(res.context));
@@ -271,23 +298,21 @@ async function openCase(id, setName) {
   if (setName && setName !== state.set) { state.set = setName; $("set").value = setName; await loadCases(); }
   state.sel = id; renderList();
   history.replaceState(null, "", "#set=" + state.set + "&case=" + encodeURIComponent(id));
-  const a = await api("/api/analyze", { set: state.set, case_id: id, ai: null });
+  const a = await api("/api/analyze", { set: state.set, case_id: id, ai: null, advisor_mode: state.advisorMode });
   state.analysis = a; renderDetail();
 }
 async function refreshCase() {
   if (!state.sel) return;
-  state.analysis = await api("/api/analyze", { set: state.set, case_id: state.sel, ai: aiValue() }); renderDetail();
+  state.analysis = await api("/api/analyze", { set: state.set, case_id: state.sel, ai: null, advisor_mode: state.advisorMode }); renderDetail();
 }
 function renderDetail() {
   const a = state.analysis, d = $("detail"); d.replaceChildren();
-  const rerun = el("button", { class: "btn", onclick: guard(refreshCase) }, "Re-run with this AI input");
-  d.append(el("div", { class: "panel" }, el("div", { class: "flex" }, aiControl(), rerun)),
-    casePanel(a.case),
+  d.append(casePanel(a.case),
     el("div", { class: "grid2" }, el("div", null, decisionPanel(a), actionsPanel(a)), contextPanel(a.context)),
     whatifPanel(a.case), tracePanel(a));
-  const cur = state.aiKeep; if (cur) { $("ai-outcome").value = cur.o; $("ai-conf").value = cur.c; }
-  $("ai-outcome").addEventListener("change", () => (state.aiKeep = { o: $("ai-outcome").value, c: $("ai-conf").value }));
-  $("ai-conf").addEventListener("change", () => (state.aiKeep = { o: $("ai-outcome").value, c: $("ai-conf").value }));
+  const cur = state.aiKeep; if (cur && $("ai-outcome")) { $("ai-outcome").value = cur.o; $("ai-conf").value = cur.c; }
+  if ($("ai-outcome")) $("ai-outcome").addEventListener("change", () => (state.aiKeep = { o: $("ai-outcome").value, c: $("ai-conf").value }));
+  if ($("ai-conf")) $("ai-conf").addEventListener("change", () => (state.aiKeep = { o: $("ai-outcome").value, c: $("ai-conf").value }));
 }
 
 // ---------- queue / audit ----------
@@ -320,6 +345,13 @@ for (const n of ["cases", "queue", "audit"]) $("tab-" + n).addEventListener("cli
 $("queue-refresh").addEventListener("click", guard(loadQueue)); $("queue-status").addEventListener("change", guard(loadQueue));
 $("audit-refresh").addEventListener("click", guard(loadAudit));
 $("filter").addEventListener("input", renderList); $("type-filter").addEventListener("change", renderList);
+$("advisor-mode").addEventListener("change", guard(async () => {
+  state.advisorMode = $("advisor-mode").value;
+  if (state.sel) {
+    toast("Re-running advisor with " + state.advisorMode.replaceAll("_", " ") + "…", true);
+    await refreshCase();
+  }
+}));
 $("set").addEventListener("change", guard(async () => { state.set = $("set").value; state.sel = null; $("detail").replaceChildren(el("div", { class: "panel muted" }, "Pick a case on the left.")); await loadCases(); }));
 
 guard(async () => {

@@ -12,6 +12,7 @@ the trace, so a planner cannot loop forever or skip error handling.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Optional, Protocol
 
 from mock_apis import SERVICE_FIELDS, MockBackend, ToolError
@@ -69,7 +70,10 @@ class EvidenceBundle:
 
 
 class EvidenceAgent:
-    def __init__(self, backend: MockBackend, planner: Optional[Planner] = None):
+    def __init__(self, backend, planner: Optional[Planner] = None):
+        # Backend implements call(service, case_id). It may be the direct mock
+        # backend or an MCP-backed adapter; orchestration remains here so the
+        # MCP server never calls back into this agent (no recursive MCP path).
         self.backend = backend
         self.planner = planner or RulePlanner()
 
@@ -78,17 +82,39 @@ class EvidenceAgent:
         trace: list[dict] = []
         calls = 0
         while calls < MAX_CALLS:
+            planner_started = perf_counter()
             service = self.planner.plan_next(state)
+            planner_ms = round((perf_counter() - planner_started) * 1000, 2)
+            planner_error = state.failed.get("__planner__")
+            if service is not None or planner_error:
+                trace.append({
+                    "event": "planner",
+                    "service": None,  # preserves the existing trace schema for callers
+                    "planner": type(self.planner).__name__,
+                    "selected_service": service or "(stop)",
+                    "ok": not bool(planner_error),
+                    "attempts": 1,
+                    "latency_ms": planner_ms,
+                    "available_services": sorted(
+                        name for name in SERVICE_FIELDS
+                        if name not in state.tried
+                        and (name != "snad_claim" or state.collected.get("case_type") == "SNAD")
+                    ),
+                    "error": planner_error,
+                })
             if service is None:
                 break
             if service not in SERVICE_FIELDS or service in state.tried:
                 # Planner asked for something invalid or repeated: record and stop
                 # rather than let it burn the budget.
-                trace.append({"service": service, "ok": False, "attempts": 0,
-                              "error": "invalid or repeated tool request"})
-                state.failed[str(service)] = "invalid or repeated tool request"
+                error = "invalid or repeated tool request"
+                trace.append({"event": "tool", "service": service, "ok": False,
+                              "attempts": 0, "latency_ms": 0.0, "result_fields": [],
+                              "error": error})
+                state.failed[str(service)] = error
                 break
             attempts, error, result = 0, None, None
+            tool_started = perf_counter()
             while attempts < MAX_ATTEMPTS and calls < MAX_CALLS:
                 attempts += 1
                 calls += 1
@@ -100,11 +126,14 @@ class EvidenceAgent:
                     error = str(e)
                     if not e.transient:
                         break
+            tool_ms = round((perf_counter() - tool_started) * 1000, 2)
             if result is not None:
                 state.collected.update(result)
                 state.done.add(service)
             else:
                 state.failed[service] = error or "call budget exhausted"
-            trace.append({"service": service, "ok": result is not None,
-                          "attempts": attempts, "error": error})
+            trace.append({"event": "tool", "service": service, "ok": result is not None,
+                          "attempts": attempts, "latency_ms": tool_ms,
+                          "result_fields": sorted(result.keys()) if result is not None else [],
+                          "error": error})
         return EvidenceBundle(case_id, state.collected, trace, state.failed)

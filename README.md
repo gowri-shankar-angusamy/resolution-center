@@ -24,7 +24,10 @@ flowchart TD
     CLI[Review CLI] --> S
     MCP[MCP server, 6 tools] --> S
     S[ResolutionService] --> E[Evidence agent]
-    E --> M[(Mock APIs, 6 services)]
+    E -->|direct default| M[(Mock APIs, 6 services)]
+    E -->|RC_EVIDENCE_TRANSPORT=mcp| MC[MCP client adapter]
+    MC --> ES[MCP evidence server, 6 granular tools]
+    ES --> M
     S --> P[Policy layer]
     P --> R[rulebook.py]
     S --> A[Approvals]
@@ -71,7 +74,7 @@ Not covered yet: partial refunds, unauthorized transactions, refund-not-received
 
 ## Getting started
 
-Requirements: Python 3.10 or newer. Everything uses the standard library except the MCP server, which needs the `mcp` Python SDK (the version that provides `mcp.server.mcpserver`).
+Requirements: Python 3.10 or newer. Everything uses the standard library except MCP servers and their stdio integration tests, which need the `mcp` Python SDK (the version that provides `mcp.server.mcpserver`).
 
 ```bash
 pip install mcp            # only needed for mcp_server.py and test_mcp_server.py
@@ -105,6 +108,32 @@ python console.py --port 8765        # then open http://127.0.0.1:8765
 
 A local web UI with three views: cases, approval queue and audit log. It can analyze a case (gather evidence, decide, show reviewer context), run a what-if on a pasted case without saving anything, submit to the queue, and review or execute. It serves the dev and gold sets only, binds to localhost, and checks Host and Origin on every request. Reviewer names and roles are self-declared; there is no authentication.
 
+### Evidence planner: deterministic or local Ollama
+
+The application uses the deterministic `RulePlanner` by default. To opt into the local Ollama planner, first make sure Ollama is running and `qwen3.5:4b` is available, then set these environment variables in the same PowerShell session used to launch the app:
+
+```powershell
+$env:RC_PLANNER = "ollama"
+$env:OLLAMA_MODEL = "qwen3.5:4b"
+$env:OLLAMA_HOST = "http://localhost:11434"
+$env:OLLAMA_TIMEOUT = "45"
+python console.py --port 8765
+```
+
+`RC_PLANNER` accepts `rule` or `ollama`. If omitted, it defaults to `rule`, preserving the original deterministic behavior. To switch back in the same PowerShell session:
+
+```powershell
+$env:RC_PLANNER = "rule"
+```
+
+The Ollama planner only chooses the next evidence service; Python still validates and executes tools, handles retries and call limits, and the deterministic policy/rulebook remains responsible for the dispute outcome. Planner errors fail closed and mark the evidence bundle incomplete. The LLM planner is experimental and may add latency because it makes a local model request for each planning turn.
+
+Planner configuration tests can be run without a running Ollama server:
+
+```powershell
+python test_rc_planner_config.py
+```
+
 ### Review CLI
 
 ```bash
@@ -119,13 +148,26 @@ python review_cli.py verify            # checks the audit log hash chain
 
 The audit log defaults to `audit/audit_log.jsonl`; set `RC_AUDIT_LOG` to use another file.
 
-### MCP server
+### MCP integration
 
-```bash
-python mcp_server.py                   # stdio transport
+There are two intentionally separate MCP servers:
+
+- `mcp_server.py` exposes higher-level reviewer/application tools (`list_cases`, `gather_evidence`, `decide_case`, `get_case_context`, `submit_for_approval`, `list_approval_queue`). Run it with `python mcp_server.py` for an external MCP client.
+- `evidence_mcp_server.py` exposes granular, read-only evidence tools (`order`, `dispute`, `tracking`, `merchant`, `buyer_history`, `snad_claim`). It is launched and managed by the local MCP client adapter when the evidence transport is set to `mcp`.
+
+To route the live evidence-gathering workflow through MCP and let Qwen choose from discovered MCP tool schemas:
+
+```powershell
+$env:RC_EVIDENCE_TRANSPORT = "mcp"
+$env:RC_PLANNER = "ollama"
+$env:RC_AI_ADVISOR = "ollama"
+$env:OLLAMA_MODEL = "qwen3.5:4b"
+$env:OLLAMA_ADVISOR_MODEL = "qwen3.5:4b"
+$env:OLLAMA_HOST = "http://localhost:11434"
+python console.py --port 8765
 ```
 
-Point any MCP client at that command. Tools: `list_cases`, `gather_evidence`, `decide_case`, `get_case_context`, `submit_for_approval`, `list_approval_queue`. Typical flow: list, decide, get context, submit. Approval and execution are human-only (console or CLI).
+The MCP client performs `initialize`, `tools/list`, and `tools/call` over a persistent stdio process. The Planner only receives discovered, allowlisted evidence tools and can select one per turn. The Evidence Agent retains call budgets, retries, validation, and tracing. `evidence_mcp_server.py` calls `MockBackend` directly and never calls `ResolutionService` or `EvidenceAgent`, so this is not recursive. The direct backend remains the default (`RC_EVIDENCE_TRANSPORT=direct`) to preserve existing tests and allow comparison. Install the compatible `mcp` SDK before using MCP transport.
 
 ## Data and labels
 
@@ -202,7 +244,9 @@ Retrieval: the firing rule appears in the top 3 BM25 policy hits 39% of the time
 | `approvals.py` | Approval workflow with hash-chained audit log |
 | `evidence_agent.py`, `mock_apis.py` | Evidence-gathering agent and mock backend services |
 | `rc_service.py` | Service layer behind the MCP tools and console |
-| `mcp_server.py` | MCP server (stdio) |
+| `mcp_server.py` | Higher-level MCP server (stdio) |
+| `evidence_mcp_server.py` | Granular evidence-tool MCP server (stdio) |
+| `mcp_evidence_client.py` | Persistent MCP stdio client adapter used by the Evidence Agent |
 | `console.py`, `console/index.html` | Local reviewer web UI |
 | `review_cli.py` | Command-line reviewer |
 | `retrieval.py`, `rag_indexes.py` | Dependency-free BM25 and the three indexes |
@@ -240,3 +284,61 @@ Kev and the System One API it follows come from their own authors; this project 
 ## License
 
 No license has been selected yet. Add a `LICENSE` file before sharing the code more widely.
+
+## AI decision advisor, observability, and planner comparison
+
+The optional AI Decision Advisor is separate from the evidence planner. When `RC_PLANNER=ollama`, the advisor defaults to Ollama as well and proposes an outcome after evidence collection. The deterministic rulebook remains authoritative; the advisor recommendation is recorded and compared by `policy.decide`, and disagreements or low confidence increase human-review requirements. The advisor never executes or approves anything.
+
+Configuration (PowerShell, from the project root):
+
+```powershell
+$env:RC_PLANNER = "ollama"
+$env:RC_AI_ADVISOR = "ollama"
+$env:OLLAMA_MODEL = "qwen3.5:4b"
+$env:OLLAMA_ADVISOR_MODEL = "qwen3.5:4b"
+$env:OLLAMA_HOST = "http://localhost:11434"
+$env:OLLAMA_TIMEOUT = "45"
+$env:OLLAMA_ADVISOR_TIMEOUT = "60"
+python console.py
+```
+
+`RC_AI_ADVISOR` accepts `ollama` or `none`. If the evidence planner is `rule`, the advisor defaults to off to preserve the existing deterministic baseline. Set `RC_AI_ADVISOR=ollama` to run the advisor independently of planner mode. If Ollama is unavailable or returns malformed output, the UI reports the advisor error and the case still receives the deterministic rulebook outcome.
+
+The live case view displays the AI outcome, model-reported confidence, rationale, evidence for/against, missing information, model, selected context mode, and advisor latency. The evidence trace records planner selections and latency plus tool latency, attempts, result field names, and errors; it does not log evidence values.
+
+The **AI context** dropdown defaults to **AI only (no policy)** and supports three experiments:
+
+- `AI only (no policy)`: sends the case fields/statements and allowed outcomes, with no policy, guidance, or precedent context.
+- `AI + Policy RAG`: sends retrieved guidance and development precedents, and supplements keyword results with policy rules whose conditions appear applicable. This coverage is intentional: on RC-0085, both INR-2 and G4 should be supplied when their conditions match.
+- `AI + explicit policy`: sends applicable rule text extracted from `Resolution Center — Dispute Rulebook v0.1.docx`, without retrieved guidance or precedents.
+
+All three modes keep `rulebook.py` independent and authoritative. The Advisor does not receive the fired rule ID, final rulebook outcome, or gold/evaluation labels. Applicable-rule selection is context assembly only, not an alternative decision engine. The Advisor prompt explicitly asks it to compare buyer and merchant statements, identify contradictions, and consider supplied escalation rules.
+
+Expand **AI input audit** in the case decision panel to inspect the exact logical case payload, policy context, and system prompt assembled for Ollama. This audit includes case statements and evidence values; this project is intended for local synthetic data, so do not expose the console to a network or use real customer data without adding access controls, redaction, and retention policies. Model-reported confidence is not calibrated probability.
+
+Compare the deterministic and Ollama evidence planners on a development case (the script does not submit or execute a case):
+
+```powershell
+python compare_planners.py RC-0231
+```
+
+Compare all three Advisor context modes on one case. Evidence is gathered once, so planner latency is measured once and each Advisor mode reports its own latency:
+
+```powershell
+python compare_advisor_modes.py RC-0085
+```
+
+Set `RC_PLANNER=ollama` to measure the Ollama planner; use `RC_PLANNER=rule` for a faster deterministic evidence-gathering baseline. This comparison command explicitly enables the Ollama Advisor for its three calls. On a local CPU, the three model calls may take several minutes in total.
+
+Run the local tests:
+
+```powershell
+python test_evidence_agent.py
+python test_ollama_planner.py
+python test_rc_planner_config.py
+python test_ai_advisor.py
+python test_console.py
+python test_rag.py
+```
+
+The AI advisor uses only case inputs and reviewer context. It does not receive the current case's exact fired rule or final rulebook outcome, nor the gold/evaluation labels. Similar development precedents may contain their resolved outcomes as intended RAG context. The confidence is self-reported by the model and is not calibrated probability. Treat the AI output as an experiment for evaluation, not as ground truth.

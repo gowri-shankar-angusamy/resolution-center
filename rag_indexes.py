@@ -157,3 +157,79 @@ def build_context(mi: MultiIndex, case: dict, decision, k: int = 3) -> dict:
                            "rule": h.doc.meta["rule"], "score": round(h.score, 2)}
                           for h in results["precedents"]],
     }
+
+
+def applicable_policy_rule_ids(case: dict) -> list[str]:
+    """Return policy rules whose conditions appear applicable from case fields.
+
+    This is context selection only, not a second decision engine: rulebook.py
+    remains authoritative. Multiple rules can be returned when their conditions
+    overlap (for example INR-2 and G4 on a high-value INR case with conflicting
+    delivery evidence).
+    """
+    ids: list[str] = []
+    try:
+        filed = date.fromisoformat(case["filed_date"])
+        order_date = date.fromisoformat(case["order_date"])
+        promised = date.fromisoformat(case["promised_delivery_date"])
+    except (KeyError, TypeError, ValueError):
+        filed = order_date = promised = None
+
+    amount = case.get("order_amount", 0)
+    conflict = bool(case.get("evidence_conflict", False))
+    proof = case.get("delivery_proof")
+    tracking = case.get("tracking_status")
+    case_type = case.get("case_type")
+
+    if filed and order_date and (filed - order_date).days > 180:
+        ids.append("G1")
+    if case.get("is_duplicate") is True:
+        ids.append("G2")
+    if case_type == "SNAD" and case.get("snad_issue") == "counterfeit":
+        ids.append("G3")
+    if conflict and isinstance(amount, (int, float)) and amount >= 1000:
+        ids.append("G4")
+    if case.get("prior_buyer_disputes_90d", 0) >= 3 and proof in ("signature", "photo"):
+        ids.append("G5")
+    if conflict:
+        ids.append("G6")
+
+    if case_type == "INR":
+        if filed and promised and (filed - promised).days < 0 and tracking not in ("lost", "returned_to_sender"):
+            ids.append("INR-1")
+        if tracking == "delivered" and proof in ("signature", "photo") and case.get("address_match") is True:
+            ids.append("INR-2")
+        if tracking == "delivered" and (proof == "none" or case.get("address_match") is False):
+            ids.append("INR-3")
+        if tracking in ("lost", "returned_to_sender"):
+            ids.append("INR-4")
+        if filed and promised and tracking == "none" and (filed - promised).days >= 7 and case.get("merchant_response") == "none":
+            ids.append("INR-5")
+        if filed and promised and tracking == "none" and 0 <= (filed - promised).days < 7:
+            ids.append("INR-6")
+        if tracking == "in_transit":
+            ids.append("INR-7")
+
+    if case_type == "SNAD":
+        if not case.get("buyer_description_provided") or not case.get("buyer_photo_provided"):
+            ids.append("SNAD-1")
+        issue = case.get("snad_issue")
+        if issue == "wrong_item":
+            ids.append("SNAD-2")
+        if issue == "attribute_mismatch" and case.get("merchant_response") == "none":
+            ids.append("SNAD-3")
+        if issue == "subjective_only" and case.get("listing_matches_item") is True:
+            ids.append("SNAD-4")
+        if issue == "damaged":
+            ids.append("SNAD-5")
+        if isinstance(amount, (int, float)) and amount >= 100 and case.get("return_status") == "not_shipped":
+            ids.append("SNAD-6")
+
+    # Keep document order stable and avoid duplicates.
+    return list(dict.fromkeys(ids))
+
+
+def applicable_policy_text(case: dict, docx: Path = DOCX) -> list[str]:
+    """Return exact policy-document paragraphs for all apparently applicable rules."""
+    wanted = set(applicable_policy_rule_ids(case))
+    return [doc.text for doc in build_policy_docs(docx) if doc.doc_id in wanted]
